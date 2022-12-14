@@ -29,8 +29,7 @@ import argparse
 from functools import partial
 import os
 import sys
-import glob
-import natsort
+
 from PIL import Image
 import numpy as np
 from attrdict import AttrDict
@@ -45,7 +44,6 @@ import torch
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
-from sklearn.metrics import accuracy_score
 #import torchvision.transforms as transforms
 #import torch.nn.functional as F
 
@@ -159,11 +157,6 @@ def preprocess(img, format, dtype, c, h, w, scaling, protocol):
         sample_img = img.convert('L')
     else:
         sample_img = img.convert('RGB')
-        # JYP
-        # trained through cv2.imread
-        # -> The model was trained channel order of (b,g,r)
-        r, g, b    = sample_img.split()
-        sample_img = Image.merge("RGB", (b, g, r))
 
     #resized_img = sample_img.resize((w, h), Image.BILINEAR)
     resized_img = sample_img.resize((w, h), Image.Resampling.BILINEAR)
@@ -196,16 +189,11 @@ def preprocess(img, format, dtype, c, h, w, scaling, protocol):
     return ordered
 
 
-def postprocess(results, output_name, batch_size, supports_batching, filenames, this_id, gts, preds, label_description, label_encoder, label_decoder):
+def postprocess(results, output_name, batch_size, supports_batching):
     """
     Post-process results to show classifications.
-    """        
-    test_label = [sample.split('/')[-2] for sample in filenames]  # '간자장'
-    test_labels = [label_encoder[k] for k in test_label]  # 0   
-    
-    sample_name = filenames[int(this_id)-1]  #/home/client/test_re/간자장/02_021_02011001_160882638579261_0_1.jpg
-    print(f"IMAGE: {sample_name}")
-    
+    """
+
     output_array = results.as_numpy(output_name)
     if supports_batching and len(output_array) != batch_size:
         raise Exception("expected {} results, got {}".format(
@@ -221,14 +209,23 @@ def postprocess(results, output_name, batch_size, supports_batching, filenames, 
                 cls = "".join(chr(x) for x in result).split(':')
             else:
                 cls = result.split(':')
-            #print("    {} ({}) = {}".format(cls[0], cls[1], cls[2]))
-            gts.append(filenames[int(this_id)-1].split("/")[-2])   #label_encoder is {'간자장': 0, '갈치구이': 1,                 
-            #preds.append(int(cls[1]))
-            preds.append(label_decoder[int(cls[1])])
+            print("    {} ({}) = {}".format(cls[0], cls[1], cls[2]))
 
-            print(f"GT: {filenames[int(this_id)-1].split('/')[-2]}")
-            print(f"PRED: {label_decoder[int(cls[1])]}") # label_decoder is {0: '간자장', 1: '갈치구이',
-    return gts, preds
+
+    #return correct
+        # JYP
+    ## Include special handling for non-batching models
+    #for results in output_array:
+    #    if not supports_batching:
+    #        results = [results]
+    #    for result in results:
+    #        print(f"DEBUGGING: result = {result}")
+    #        #if output_array.dtype.type == np.object_:
+    #        #    cls = "".join(chr(x) for x in result).split(':')
+    #        #else:
+    #        #    cls = result.split(':')
+    #        #print("    {} ({}) = {}".format(cls[0], cls[1], cls[2]))
+
 
 def requestGenerator(batched_image_data, input_name, output_name, dtype, FLAGS):
     protocol = FLAGS.protocol.lower()
@@ -242,9 +239,9 @@ def requestGenerator(batched_image_data, input_name, output_name, dtype, FLAGS):
     # JYP GOAL: normalize data
     batched_image_data = np.transpose(batched_image_data, (1,2,0))
     transforms = A.Compose([
-                A.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD),
-                ToTensorV2()
-            ])
+        A.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD),
+        ToTensorV2()
+        ])
     torch_image = transforms(image = batched_image_data)
     torch_image = torch_image['image']
     batched_image_data = torch_image.numpy()
@@ -265,10 +262,8 @@ def convert_http_metadata_config(_metadata, _config):
 
     return _model_metadata, _model_config
 
+
 if __name__ == '__main__':
-    gts=[]
-    preds=[]
-    
     parser = argparse.ArgumentParser()
     parser.add_argument('-v',
                         '--verbose',
@@ -388,42 +383,21 @@ if __name__ == '__main__':
     if not supports_batching and FLAGS.batch_size != 1:
         print("ERROR: This model doesn't support batching.")
         sys.exit(1)
-    # ########### OG ###################
-    # filenames = []
-    # if os.path.isdir(FLAGS.image_filename):
-    #     filenames = [
-    #         os.path.join(FLAGS.image_filename, f)
-    #         for f in os.listdir(FLAGS.image_filename)
-    #         if os.path.isfile(os.path.join(FLAGS.image_filename, f))
-    #     ]
-    # else:
-    #     filenames = [
-    #         FLAGS.image_filename,
-    #     ]
-    # #print(f"filenames is {filenames}") #filenames is ['/home/client/test/우유/A190117XX_14093_1.jpg', '/home/client/test/우유/A190117XX_14558_0.jpg']
-    # filenames.sort()
-    # ###################
-    
-    ################### NEW ###################
-    filenames = []
 
+    filenames = []
     if os.path.isdir(FLAGS.image_filename):
-        filenames = glob.glob(FLAGS.image_filename+"/*/*") #/test/class/sample
-        
+        filenames = [
+            os.path.join(FLAGS.image_filename, f)
+            for f in os.listdir(FLAGS.image_filename)
+            if os.path.isfile(os.path.join(FLAGS.image_filename, f))
+        ]
     else:
         filenames = [
             FLAGS.image_filename,
         ]
-    
-    label_description = sorted(os.listdir(os.path.join(FLAGS.image_filename))) #label_description is ['간자장', '갈치구이', '감자구이', '감자밥',    
-    label_encoder = {key: idx for idx, key in enumerate(label_description)} #label_encoder is {'간자장': 0, '갈치구이': 1, '감자구이': 2, '감자밥': 3, 
-    label_decoder = {val: key for key, val in label_encoder.items()}  #label_decoder is {0: '간자장', 1: '갈치구이', 2: '감자구이', 3: '감자밥',
-    
-    filenames.sort()
-    #print(f"filenames is {filenames}") #filenames is ['/home/client/test/우유/A190117XX_14093_1.jpg', '/home/client/test/우유/A190117XX_14558_0.jpg']
-    
 
-    ###################################### 
+    filenames.sort()
+
     # Preprocess the images into input data according to model
     # requirements
     image_data = []
@@ -504,7 +478,7 @@ if __name__ == '__main__':
                                             request_id=str(sent_count),
                                             model_version=FLAGS.model_version,
                                             outputs=outputs))
-    
+
         except InferenceServerException as e:
             print("inference failed: " + str(e))
             if FLAGS.streaming:
@@ -536,15 +510,7 @@ if __name__ == '__main__':
             this_id = response.get_response().id
         else:
             this_id = response.get_response()["id"]
-        #print("Request {}, batch size {}".format(this_id, FLAGS.batch_size))
-        print("\n")
-        print("====="*30)
-        print("Request {}th images, batch size {}".format(this_id, FLAGS.batch_size)) #this_id는 1부터 
-        gts, preds = postprocess(response, output_name, FLAGS.batch_size, supports_batching, filenames, this_id, gts, preds, label_description, label_encoder, label_decoder)
-        #print(f"acc is {accuracy_score(gts, preds)}")
-        print(f"final accuracy: {accuracy_score(gts, preds) * 100:.2f}% \n\n")
-            
-    print("=" * 50 + "\n\n")
-    print(f"final accuracy: {accuracy_score(gts, preds) * 100:.2f}% \n\n")
-    print("=" * 50 + "\n\n")
-    print("FINISH")
+        print("Request {}, batch size {}".format(this_id, FLAGS.batch_size))
+        postprocess(response, output_name, FLAGS.batch_size, supports_batching)
+
+    print("PASS")
