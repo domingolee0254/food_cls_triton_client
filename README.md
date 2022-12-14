@@ -1,7 +1,5 @@
 # **Triton Client for Food Classification**
 
----
-
 ## Usage
 
 ### make client docker container
