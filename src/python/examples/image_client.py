@@ -33,6 +33,7 @@ import glob
 import natsort
 from PIL import Image
 import numpy as np
+import time
 from attrdict import AttrDict
 
 import tritonclient.grpc as grpcclient
@@ -248,7 +249,7 @@ def requestGenerator(batched_image_data, input_name, output_name, dtype, FLAGS):
     torch_image = transforms(image = batched_image_data)
     torch_image = torch_image['image']
     batched_image_data = torch_image.numpy()
-
+    #print(batched_image_data)
     inputs = [client.InferInput(input_name, batched_image_data.shape, dtype)]
     inputs[0].set_data_from_numpy(batched_image_data)
 
@@ -451,6 +452,8 @@ if __name__ == '__main__':
 
     if FLAGS.streaming:
         triton_client.start_stream(partial(completion_callback, user_data))
+    
+    gap_list=[]
 
     while not last_request:
         input_filenames = []
@@ -498,13 +501,25 @@ if __name__ == '__main__':
                                 model_version=FLAGS.model_version,
                                 outputs=outputs))
                 else:
-                    responses.append(
-                        triton_client.infer(FLAGS.model_name,
+                    start = time.time()
+                    res = triton_client.infer(FLAGS.model_name,
                                             inputs,
                                             request_id=str(sent_count),
                                             model_version=FLAGS.model_version,
-                                            outputs=outputs))
-    
+                                            outputs=outputs)
+                    end = time.time()
+                    gap = end - start
+                    gap_list.append(gap)
+                    print(f'Multi-GPU Inference time 1 img: {end - start:.5f} sec')
+                    responses.append(res)
+                    # responses.append(
+                    #     triton_client.infer(FLAGS.model_name,
+                    #                         inputs,
+                    #                         request_id=str(sent_count),
+                    #                         model_version=FLAGS.model_version,
+                    #                         outputs=outputs))
+            print(f'avg time: {sum(gap_list)/len(gap_list)}')
+
         except InferenceServerException as e:
             print("inference failed: " + str(e))
             if FLAGS.streaming:
@@ -530,7 +545,8 @@ if __name__ == '__main__':
             # for HTTP Async requests.
             for async_request in async_requests:
                 responses.append(async_request.get_result())
-
+    
+    
     for response in responses:
         if FLAGS.protocol.lower() == "grpc":
             this_id = response.get_response().id
@@ -541,9 +557,9 @@ if __name__ == '__main__':
         print("====="*30)
         print("Request {}th images, batch size {}".format(this_id, FLAGS.batch_size)) #this_id는 1부터 
         gts, preds = postprocess(response, output_name, FLAGS.batch_size, supports_batching, filenames, this_id, gts, preds, label_description, label_encoder, label_decoder)
-        #print(f"acc is {accuracy_score(gts, preds)}")
         print(f"final accuracy: {accuracy_score(gts, preds) * 100:.2f}% \n\n")
-            
+    
+        
     print("=" * 50 + "\n\n")
     print(f"final accuracy: {accuracy_score(gts, preds) * 100:.2f}% \n\n")
     print("=" * 50 + "\n\n")
